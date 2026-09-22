@@ -516,6 +516,12 @@
   let currentData = []; // [{...apiFields, fetchedAt: Date, remaining: seconds}]
   let vehicleFilterValue = 'all';
 
+  // Memoria de la última secuencia (currentstop_order/nextstop_order) que sí
+  // se pudo leer de PILOT, por vehículo. Si en algún momento PILOT la pierde
+  // (viene null o falla la consulta), seguimos mostrando esta última
+  // conocida en vez de "no disponible", dejando claro que está congelada.
+  const lastKnownSequence = {}; // { vehicle: {current, next, direction, ts} }
+
   function pad(n){ return String(n).padStart(2,'0'); }
 
   function updateClock(){
@@ -582,10 +588,20 @@
         const result = await getBusDirection(item.vehicle, node);
         if(currentData[i] !== item) return; // los datos ya se refrescaron, descartar
         item.direction = result.direction;
+        item.directionStale = false;
+        lastKnownSequence[item.vehicle] = { ...result, ts: Date.now() };
         renderRows();
       }catch(err){
         if(currentData[i] !== item) return;
-        item.direction = null;
+        const last = lastKnownSequence[item.vehicle];
+        if(last){
+          item.direction = last.direction;
+          item.directionStale = true;
+          item.directionStaleSince = last.ts;
+        }else{
+          item.direction = null;
+          item.directionStale = false;
+        }
         renderRows();
       }
     });
@@ -647,13 +663,18 @@
       else if(item.direction === null && item.hasOwnProperty('direction')) directionText = 'Dirección no disponible';
       else directionText = 'Calculando dirección…';
 
+      if(item.directionStale && item.directionStaleSince){
+        const staleTime = new Date(item.directionStaleSince).toLocaleTimeString('es-HN', { hour12: false });
+        directionText += ` (congelado desde ${staleTime} — PILOT perdió la secuencia)`;
+      }
+
       const parkedText = item.parkedZone
         ? `📍 Estacionado en geocerca: ${escapeHtml(item.parkedZone)}`
         : '';
 
       let sequenceEtaText;
       if(item.sequenceDistanceKm != null){
-        sequenceEtaText = `🛣 Distancia por ruta real: ${item.sequenceDistanceKm.toFixed(1)} km (${item.sequenceEtaStops} tramo${item.sequenceEtaStops === 1 ? '' : 's'})`;
+        sequenceEtaText = `🛣 Distancia por ruta real: ${item.sequenceDistanceKm.toFixed(1)} km (${item.sequenceEtaStops} tramo${item.sequenceEtaStops === 1 ? '' : 's'})${item.sequenceUsedStale ? ' — usando última secuencia conocida' : ''}`;
       }else if(item.sequenceEtaError){
         sequenceEtaText = `🛣 Distancia por ruta real: no disponible (${escapeHtml(item.sequenceEtaError)})`;
       }else{
@@ -666,7 +687,7 @@
           <div class="dest">
             <div class="name">${escapeHtml(item.line_name || 'Ruta sin nombre')}</div>
             <div class="sub">Vehículo ${escapeHtml(item.vehicle || item.vehid || '—')} · parada ${item.this_stop ?? '—'} de la ruta</div>
-            <div class="sub" style="color:var(--text-dim);">${directionText}</div>
+            <div class="sub" style="color:${item.directionStale ? 'var(--amber)' : 'var(--text-dim)'};">${directionText}</div>
             <div class="sub" style="color:var(--green);">${sequenceEtaText}</div>
             ${parkedText ? `<div class="sub" style="color:var(--amber);">${parkedText}</div>` : ''}
           </div>
@@ -883,7 +904,17 @@
     const node = findNodeForLine(item.line_id);
     if(!node) throw new Error('No se encontró el node de esta ruta');
 
-    const busState = await getBusDirection(item.vehicle, node);
+    let busState;
+    let usedStaleSequence = false;
+    try{
+      busState = await getBusDirection(item.vehicle, node);
+    }catch(err){
+      const last = lastKnownSequence[item.vehicle];
+      if(!last) throw err;
+      busState = last;
+      usedStaleSequence = true;
+    }
+
     const targetOrder = Number(item.this_stop);
     if(isNaN(busState.next) || isNaN(targetOrder)){
       throw new Error('Órdenes de parada inválidos');
@@ -919,7 +950,7 @@
       prevLon = stop.lon;
     }
 
-    return { distanceM: totalMeters, stopsCount: sequence.length };
+    return { distanceM: totalMeters, stopsCount: sequence.length, usedStaleSequence };
   }
 
   async function updateSequenceEtas(){
@@ -931,6 +962,7 @@
         item.sequenceDistanceKm = result.distanceM / 1000;
         item.sequenceEtaStops = result.stopsCount;
         item.sequenceEtaError = null;
+        item.sequenceUsedStale = result.usedStaleSequence;
         renderRows();
       }catch(err){
         if(currentData[i] !== item) return;
