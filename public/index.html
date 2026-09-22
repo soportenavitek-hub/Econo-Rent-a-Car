@@ -445,6 +445,20 @@
     </div>
   </details>
 
+  <details class="config" id="engineOffLogPanel">
+    <summary>Registro: motor apagado dentro de geocerca</summary>
+    <div class="config-body" style="grid-template-columns: 1fr;">
+      <div class="field">
+        <label>Eventos detectados (con la secuencia conocida en ese momento)</label>
+        <div class="hint" style="margin-bottom:8px;">
+          Se registra automáticamente cuando un vehículo pasa a estar apagado dentro de una geocerca. No se repite mientras siga en ese estado — solo al entrar. Se reinicia si recargas la página.
+        </div>
+        <button class="secondary" id="clearEngineOffLogBtn" type="button" style="margin-bottom:8px;">Limpiar registro</button>
+        <pre id="engineOffLog" style="white-space:pre-wrap; word-break:break-all; background:var(--panel-raised); border:1px solid var(--line); border-radius:4px; padding:10px; font-size:12px; color:var(--text); max-height:320px; overflow:auto;">Sin eventos todavía.</pre>
+      </div>
+    </div>
+  </details>
+
   <footer id="footerNote"></footer>
   <div style="text-align:center; margin-top:10px;">
     <a href="/logout" style="color:var(--text-dim); font-size:11px; font-family:'Barlow Condensed', sans-serif; letter-spacing:.04em; text-decoration:underline;">Cerrar sesión</a>
@@ -467,6 +481,8 @@
     footerNote: document.getElementById('footerNote'),
     debugUrl: document.getElementById('debugUrl'),
     debugRaw: document.getElementById('debugRaw'),
+    engineOffLog: document.getElementById('engineOffLog'),
+    clearEngineOffLogBtn: document.getElementById('clearEngineOffLogBtn'),
     configPanel: document.getElementById('configPanel'),
     node: document.getElementById('node'),
     loadStopsBtn: document.getElementById('loadStopsBtn'),
@@ -571,9 +587,20 @@
     const next = Number(line.nextstop_order);
     if(isNaN(current) || isNaN(next)) throw new Error('Órdenes de parada inválidos');
 
+    // OJO: en rutas de ida y vuelta, la secuencia sigue subiendo durante el
+    // regreso (no baja) — así que comparar current vs next NO sirve para
+    // saber la dirección. Cada parada trae su propio campo "dir" (0=ida,
+    // 1=regreso); usamos el de la parada hacia la que va (next).
     let direction = null;
-    if(next > current) direction = 'ida';
-    else if(next < current) direction = 'vuelta';
+    try{
+      const stops = await getRouteStopsCached(node);
+      const nextStop = stops.find(s => s.stop_order === next);
+      if(nextStop && nextStop.dir === 0) direction = 'ida';
+      else if(nextStop && nextStop.dir === 1) direction = 'vuelta';
+    }catch(err){
+      // Si falla la consulta de paradas, se queda sin dirección conocida
+      // en vez de adivinar mal con la comparación de números.
+    }
 
     return { direction, current, next };
   }
@@ -690,6 +717,7 @@
             <div class="sub" style="color:${item.directionStale ? 'var(--amber)' : 'var(--text-dim)'};">${directionText}</div>
             <div class="sub" style="color:var(--green);">${sequenceEtaText}</div>
             ${parkedText ? `<div class="sub" style="color:var(--amber);">${parkedText}</div>` : ''}
+            ${(item.parkedZone && item.engineOff === true) ? `<div class="sub" style="color:var(--red);">🔧 Motor apagado en esta geocerca</div>` : ''}
           </div>
           <span class="type-badge">${typeLabel(item.line_type)}</span>
           <div class="eta">
@@ -840,8 +868,59 @@
     const lat = status && parseFloat(status.lat);
     const lon = status && parseFloat(status.lon);
     if(!status || isNaN(lat) || isNaN(lon)) throw new Error('Sin posición GPS válida');
-    return { lat, lon };
+
+    // Estado de motor: preferimos el sensor de encendido si viene; si no,
+    // el flag "firing" del status general.
+    const ignitionSensor = entry && Array.isArray(entry.sensors_status)
+      ? entry.sensors_status.find(s => /ignition|encendido/i.test(s.name || s.description || ''))
+      : null;
+    let ignitionOff = null;
+    if(ignitionSensor && ignitionSensor.hum_value != null){
+      ignitionOff = String(ignitionSensor.hum_value).toLowerCase() === 'off';
+    }else if(status.firing != null){
+      ignitionOff = Number(status.firing) === 0;
+    }
+
+    return { lat, lon, ignitionOff };
   }
+
+  // ---- Registro: motor apagado dentro de una geocerca ----
+  // Se guarda un evento (no repetido cada refresco) cada vez que un vehículo
+  // pasa a estar "apagado + dentro de geocerca", junto con la secuencia
+  // (current/next de currentBusState) que se conocía en ese momento.
+  const MAX_ENGINE_LOG_ENTRIES = 300;
+  let engineOffLogEntries = []; // [{ts, vehicle, zone, current, next}]
+  const engineOffActiveSet = new Set(); // vehículos actualmente en ese estado
+
+  function renderEngineOffLog(){
+    if(!engineOffLogEntries.length){
+      els.engineOffLog.textContent = 'Sin eventos todavía.';
+      return;
+    }
+    els.engineOffLog.textContent = engineOffLogEntries
+      .slice()
+      .reverse()
+      .map(e => `[${e.ts}] ${e.vehicle} — motor apagado en geocerca "${e.zone}" (secuencia: current=${e.current} next=${e.next})`)
+      .join('\n');
+  }
+
+  function logEngineOffEvent(vehicle, zone){
+    const ts = new Date().toLocaleTimeString('es-HN', { hour12: false });
+    const last = lastKnownSequence[vehicle];
+    const current = last ? last.current : 'desconocido';
+    const next = last ? last.next : 'desconocido';
+
+    engineOffLogEntries.push({ ts, vehicle, zone, current, next });
+    if(engineOffLogEntries.length > MAX_ENGINE_LOG_ENTRIES){
+      engineOffLogEntries = engineOffLogEntries.slice(-MAX_ENGINE_LOG_ENTRIES);
+    }
+    renderEngineOffLog();
+  }
+
+  els.clearEngineOffLogBtn.addEventListener('click', () => {
+    engineOffLogEntries = [];
+    renderEngineOffLog();
+  });
 
   async function updateParkedStatus(){
     if(!geofencesData.length) return;
@@ -852,10 +931,23 @@
         const pos = await getVehiclePosition(item.vehid);
         if(currentData[i] !== item) return;
         item.parkedZone = findGeofenceForPosition(pos.lat, pos.lon);
+        item.engineOff = pos.ignitionOff;
+
+        const key = item.vehicle || String(item.vehid);
+        const isEngineOffInZone = !!item.parkedZone && item.engineOff === true;
+
+        if(isEngineOffInZone && !engineOffActiveSet.has(key)){
+          engineOffActiveSet.add(key);
+          logEngineOffEvent(key, item.parkedZone);
+        }else if(!isEngineOffInZone && engineOffActiveSet.has(key)){
+          engineOffActiveSet.delete(key);
+        }
+
         renderRows();
       }catch(err){
         if(currentData[i] !== item) return;
         item.parkedZone = undefined;
+        item.engineOff = null;
         renderRows();
       }
     });
@@ -883,6 +975,7 @@
         lat: parseFloat(s.lat),
         lon: parseFloat(s.lon),
         name: s.name,
+        dir: s.dir != null ? Number(s.dir) : null, // 0 = ida, 1 = regreso
       }))
       .filter(s => !isNaN(s.stop_order) && !isNaN(s.lat) && !isNaN(s.lon));
 
