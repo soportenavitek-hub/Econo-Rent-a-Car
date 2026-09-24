@@ -1101,17 +1101,42 @@
     }
 
     const vehPos = await getVehiclePosition(item.vehid);
-    const waypoints = [{ lat: vehPos.lat, lon: vehPos.lon }];
 
-    for(const order of sequence){
+    let seqStops = sequence.map(order => {
       const stop = stopByOrder.get(order);
       if(!stop) throw new Error(`Falta la parada con orden ${order} en la ruta`);
-      waypoints.push({ lat: stop.lat, lon: stop.lon });
+      return stop;
+    });
+
+    // PILOT a veces va unos pasos atrasado respecto a la posición GPS real
+    // (no solo cuando next==current) — si la parada "siguiente" queda
+    // geográficamente DETRÁS del vehículo respecto al rumbo real hacia la
+    // parada consultada, forzarla como punto de paso genera un desvío que no
+    // existe (confirmado con ENO1885: 5.6 km calculados vs 2.5 km directo).
+    // Se recortan las paradas iniciales cuyo producto punto contra el rumbo
+    // real (vehículo → parada consultada) sea negativo, sin tocar nunca la
+    // parada consultada en sí.
+    const finalStop = seqStops[seqStops.length - 1];
+    const lonScale = Math.cos(vehPos.lat * Math.PI / 180);
+    const aimLat = finalStop.lat - vehPos.lat;
+    const aimLon = (finalStop.lon - vehPos.lon) * lonScale;
+    while(seqStops.length > 1){
+      const candidate = seqStops[0];
+      const candLat = candidate.lat - vehPos.lat;
+      const candLon = (candidate.lon - vehPos.lon) * lonScale;
+      const dot = aimLat * candLat + aimLon * candLon;
+      if(dot < 0){
+        seqStops.shift();
+      }else{
+        break;
+      }
     }
+
+    const waypoints = [{ lat: vehPos.lat, lon: vehPos.lon }, ...seqStops.map(s => ({ lat: s.lat, lon: s.lon }))];
 
     const { distanceM, durationS } = await osrmMultiPoint(waypoints);
 
-    return { distanceM, durationS, stopsCount: sequence.length, usedStaleSequence };
+    return { distanceM, durationS, stopsCount: seqStops.length, usedStaleSequence };
   }
 
   async function updateSequenceEtas(){
