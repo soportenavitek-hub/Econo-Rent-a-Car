@@ -708,6 +708,17 @@
         sequenceEtaText = '🛣 Distancia por ruta real: calculando…';
       }
 
+      const engineOffKey = item.vehicle || String(item.vehid);
+      const engineOffSince = engineOffSinceMap[engineOffKey];
+      let engineOffText = '';
+      if(item.parkedZone && item.engineOff === true && engineOffSince){
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - engineOffSince) / 1000));
+        const elMins = Math.floor(elapsedSec / 60);
+        const elSecs = elapsedSec % 60;
+        const elapsedText = elMins > 0 ? `${elMins} min ${pad(elSecs)} seg` : `${elSecs} seg`;
+        engineOffText = `🔧 Motor apagado en esta geocerca (hace ${elapsedText})`;
+      }
+
       return `
         <div class="row" data-i="${i}">
           <span class="line-badge">${escapeHtml(item.line_num || '?')}</span>
@@ -717,7 +728,7 @@
             <div class="sub" style="color:${item.directionStale ? 'var(--amber)' : 'var(--text-dim)'};">${directionText}</div>
             <div class="sub" style="color:var(--green);">${sequenceEtaText}</div>
             ${parkedText ? `<div class="sub" style="color:var(--amber);">${parkedText}</div>` : ''}
-            ${(item.parkedZone && item.engineOff === true) ? `<div class="sub" style="color:var(--red);">🔧 Motor apagado en esta geocerca</div>` : ''}
+            ${engineOffText ? `<div class="sub" style="color:var(--red);">${engineOffText}</div>` : ''}
           </div>
           <span class="type-badge">${typeLabel(item.line_type)}</span>
           <div class="eta">
@@ -891,6 +902,7 @@
   const MAX_ENGINE_LOG_ENTRIES = 300;
   let engineOffLogEntries = []; // [{ts, vehicle, zone, current, next}]
   const engineOffActiveSet = new Set(); // vehículos actualmente en ese estado
+  const engineOffSinceMap = {}; // { vehicle: timestamp ms de cuándo empezó }
 
   function renderEngineOffLog(){
     if(!engineOffLogEntries.length){
@@ -938,9 +950,11 @@
 
         if(isEngineOffInZone && !engineOffActiveSet.has(key)){
           engineOffActiveSet.add(key);
+          engineOffSinceMap[key] = Date.now();
           logEngineOffEvent(key, item.parkedZone);
         }else if(!isEngineOffInZone && engineOffActiveSet.has(key)){
           engineOffActiveSet.delete(key);
+          delete engineOffSinceMap[key];
         }
 
         renderRows();
@@ -983,14 +997,19 @@
     return stops;
   }
 
-  async function osrmSegment(lat1, lon1, lat2, lon2){
-    const url = `https://router.project-osrm.org/route/v1/driving/${lon1},${lat1};${lon2},${lat2}?overview=false`;
+  // Manda TODOS los puntos del trayecto en una sola petición a OSRM (en vez
+  // de una petición por cada tramo) — más rápido, y si falla, falla una
+  // sola vez en lugar de a medio camino entre varias llamadas sueltas.
+  async function osrmMultiPoint(points){
+    // points: [{lat, lon}, {lat, lon}, ...] en el orden real del trayecto
+    const coords = points.map(p => `${p.lon},${p.lat}`).join(';');
+    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=false`;
     const res = await fetch(url);
     if(!res.ok) throw new Error(`OSRM respondió ${res.status}`);
     const data = await res.json();
     const route = data.routes && data.routes[0];
     if(!route) throw new Error('OSRM no devolvió ninguna ruta');
-    return route.distance; // metros
+    return route.distance; // metros, ya sumados para todo el trayecto
   }
 
   async function computeSequenceEta(item){
@@ -1031,17 +1050,15 @@
     }
 
     const vehPos = await getVehiclePosition(item.vehid);
-    let prevLat = vehPos.lat;
-    let prevLon = vehPos.lon;
-    let totalMeters = 0;
+    const waypoints = [{ lat: vehPos.lat, lon: vehPos.lon }];
 
     for(const order of sequence){
       const stop = stopByOrder.get(order);
       if(!stop) throw new Error(`Falta la parada con orden ${order} en la ruta`);
-      totalMeters += await osrmSegment(prevLat, prevLon, stop.lat, stop.lon);
-      prevLat = stop.lat;
-      prevLon = stop.lon;
+      waypoints.push({ lat: stop.lat, lon: stop.lon });
     }
+
+    const totalMeters = await osrmMultiPoint(waypoints);
 
     return { distanceM: totalMeters, stopsCount: sequence.length, usedStaleSequence };
   }
