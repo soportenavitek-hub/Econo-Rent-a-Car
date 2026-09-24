@@ -593,18 +593,27 @@
     // 1=regreso, 2=punto de retorno/giro); usamos el de la parada hacia la
     // que va (next).
     let direction = null;
+    let isLastStop = false;
     try{
       const stops = await getRouteStopsCached(node);
       const nextStop = stops.find(s => s.stop_order === next);
       if(nextStop && nextStop.dir === 0) direction = 'ida';
       else if(nextStop && nextStop.dir === 1) direction = 'vuelta';
       else if(nextStop && nextStop.dir === 2) direction = 'retorno';
+
+      // Última parada real de TODA la ruta (el stop_order más alto), distinto
+      // de "va de regreso" — un vehículo puede ir de regreso pasando por
+      // varias paradas intermedias antes de llegar a esta última.
+      if(stops.length){
+        const maxOrder = Math.max(...stops.map(s => s.stop_order));
+        isLastStop = next === maxOrder;
+      }
     }catch(err){
       // Si falla la consulta de paradas, se queda sin dirección conocida
       // en vez de adivinar mal con la comparación de números.
     }
 
-    return { direction, current, next };
+    return { direction, current, next, isLastStop };
   }
 
   async function updateDirections(){
@@ -617,6 +626,7 @@
         const result = await getBusDirection(item.vehicle, node);
         if(currentData[i] !== item) return; // los datos ya se refrescaron, descartar
         item.direction = result.direction;
+        item.isLastStop = result.isLastStop;
         item.directionStale = false;
         lastKnownSequence[item.vehicle] = { ...result, ts: Date.now() };
         renderRows();
@@ -625,10 +635,12 @@
         const last = lastKnownSequence[item.vehicle];
         if(last){
           item.direction = last.direction;
+          item.isLastStop = last.isLastStop;
           item.directionStale = true;
           item.directionStaleSince = last.ts;
         }else{
           item.direction = null;
+          item.isLastStop = false;
           item.directionStale = false;
         }
         renderRows();
@@ -698,6 +710,8 @@
         directionText += ` (congelado desde ${staleTime} — PILOT perdió la secuencia)`;
       }
 
+      const lastStopText = item.isLastStop ? '🏁 Va hacia la última parada de la ruta' : '';
+
       const parkedText = item.parkedZone
         ? `📍 Estacionado en geocerca: ${escapeHtml(item.parkedZone)}`
         : '';
@@ -729,6 +743,7 @@
             <div class="name">${escapeHtml(item.line_name || 'Ruta sin nombre')}</div>
             <div class="sub">Vehículo ${escapeHtml(item.vehicle || item.vehid || '—')} · parada ${item.this_stop ?? '—'} de la ruta</div>
             <div class="sub" style="color:${item.directionStale ? 'var(--amber)' : 'var(--text-dim)'};">${directionText}</div>
+            ${lastStopText ? `<div class="sub" style="color:var(--amber); font-weight:600;">${lastStopText}</div>` : ''}
             <div class="sub" style="color:var(--green);">${sequenceEtaText}</div>
             ${parkedText ? `<div class="sub" style="color:var(--amber);">${parkedText}</div>` : ''}
             ${engineOffText ? `<div class="sub" style="color:var(--red);">${engineOffText}</div>` : ''}
