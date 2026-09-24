@@ -590,13 +590,15 @@
     // OJO: en rutas de ida y vuelta, la secuencia sigue subiendo durante el
     // regreso (no baja) — así que comparar current vs next NO sirve para
     // saber la dirección. Cada parada trae su propio campo "dir" (0=ida,
-    // 1=regreso); usamos el de la parada hacia la que va (next).
+    // 1=regreso, 2=punto de retorno/giro); usamos el de la parada hacia la
+    // que va (next).
     let direction = null;
     try{
       const stops = await getRouteStopsCached(node);
       const nextStop = stops.find(s => s.stop_order === next);
       if(nextStop && nextStop.dir === 0) direction = 'ida';
       else if(nextStop && nextStop.dir === 1) direction = 'vuelta';
+      else if(nextStop && nextStop.dir === 2) direction = 'retorno';
     }catch(err){
       // Si falla la consulta de paradas, se queda sin dirección conocida
       // en vez de adivinar mal con la comparación de números.
@@ -687,6 +689,7 @@
       let directionText;
       if(item.direction === 'ida') directionText = '→ Va de ida';
       else if(item.direction === 'vuelta') directionText = '← Va de regreso';
+      else if(item.direction === 'retorno') directionText = '🔄 Va hacia el punto de retorno';
       else if(item.direction === null && item.hasOwnProperty('direction')) directionText = 'Dirección no disponible';
       else directionText = 'Calculando dirección…';
 
