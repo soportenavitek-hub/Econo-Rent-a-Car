@@ -1067,18 +1067,34 @@
       throw new Error('Órdenes de parada inválidos');
     }
 
+    // Cuando PILOT reporta "next" igual a "current" (pasa justo al dejar una
+    // parada, antes de que PILOT actualice la secuencia), forzar esa parada
+    // como punto de paso hace que la ruta calculada "regrese" a un lugar que
+    // el vehículo probablemente ya dejó atrás — eso es lo que estaba
+    // inflando el kilometraje (comprobado con las coordenadas de ENO1885:
+    // el primer punto de la secuencia quedaba geográficamente detrás del
+    // vehículo). En ese caso se arranca desde la siguiente parada real.
+    let startOrder = busState.next;
+    if(!isNaN(busState.current) && busState.next === busState.current){
+      startOrder = targetOrder >= busState.next ? busState.next + 1 : busState.next - 1;
+    }
+
     const stops = await getRouteStopsCached(node);
     const stopByOrder = new Map(stops.map(s => [s.stop_order, s]));
 
     // Construir la lista de órdenes a recorrer, desde la siguiente parada
     // hasta la parada consultada, en la dirección correcta.
-    const ascending = targetOrder >= busState.next;
+    const ascending = targetOrder >= startOrder;
     const sequence = [];
     if(ascending){
-      for(let o = busState.next; o <= targetOrder; o++) sequence.push(o);
+      for(let o = startOrder; o <= targetOrder; o++) sequence.push(o);
     }else{
-      for(let o = busState.next; o >= targetOrder; o--) sequence.push(o);
+      for(let o = startOrder; o >= targetOrder; o--) sequence.push(o);
     }
+    // Caso límite: si next==current==target (vehículo prácticamente en la
+    // parada consultada), la secuencia queda vacía — se usa la parada
+    // consultada como único punto para no romper la petición a OSRM.
+    if(sequence.length === 0) sequence.push(targetOrder);
 
     if(sequence.length > MAX_SEQUENCE_SEGMENTS){
       throw new Error('Demasiadas paradas de por medio para calcular con seguridad');
