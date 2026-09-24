@@ -603,6 +603,7 @@
     if(nextStop && nextStop.dir === 0) direction = 'ida';
     else if(nextStop && nextStop.dir === 1) direction = 'vuelta';
     else if(nextStop && nextStop.dir === 2) direction = 'retorno';
+    const nextStopName = nextStop ? nextStop.name : null;
 
     // Última parada real de TODA la ruta (el stop_order más alto), distinto
     // de "va de regreso" — un vehículo puede ir de regreso pasando por
@@ -613,7 +614,7 @@
       isLastStop = next === maxOrder;
     }
 
-    return { direction, current, next, isLastStop };
+    return { direction, current, next, isLastStop, nextStopName };
   }
 
   async function updateDirections(){
@@ -627,6 +628,7 @@
         if(currentData[i] !== item) return; // los datos ya se refrescaron, descartar
         item.direction = result.direction;
         item.isLastStop = result.isLastStop;
+        item.nextStopName = result.nextStopName;
         item.directionStale = false;
         lastKnownSequence[item.vehicle] = { ...result, ts: Date.now() };
         renderRows();
@@ -636,11 +638,13 @@
         if(last){
           item.direction = last.direction;
           item.isLastStop = last.isLastStop;
+          item.nextStopName = last.nextStopName;
           item.directionStale = true;
           item.directionStaleSince = last.ts;
         }else{
           item.direction = null;
           item.isLastStop = false;
+          item.nextStopName = null;
           item.directionStale = false;
         }
         renderRows();
@@ -698,10 +702,12 @@
       const secs = remaining % 60;
       const soon = mins < 2;
 
+      const destino = item.nextStopName ? escapeHtml(item.nextStopName) : null;
+
       let directionText;
-      if(item.direction === 'ida') directionText = '→ Va de ida';
-      else if(item.direction === 'vuelta') directionText = '← Va de regreso';
-      else if(item.direction === 'retorno') directionText = '🔄 Va hacia el punto de retorno';
+      if(item.direction === 'ida') directionText = destino ? `→ Va hacia ${destino}` : '→ Va de ida';
+      else if(item.direction === 'vuelta') directionText = destino ? `← Va hacia ${destino}` : '← Va de regreso';
+      else if(item.direction === 'retorno') directionText = destino ? `🔄 Va hacia ${destino} (punto de retorno)` : '🔄 Va hacia el punto de retorno';
       else if(item.direction === null && item.hasOwnProperty('direction')) directionText = 'Dirección no disponible';
       else directionText = 'Calculando dirección…';
 
