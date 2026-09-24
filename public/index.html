@@ -722,8 +722,13 @@
         ? `📍 Estacionado en geocerca: ${escapeHtml(item.parkedZone)}`
         : '';
 
-      let sequenceEtaText;
-      if(item.sequenceDistanceKm != null){
+      let sequenceEtaText = '';
+      if(item.sequenceNotApplicable){
+        // La parada consultada es de un tramo distinto al que la unidad va
+        // ahora (p.ej. es la pasada de regreso y la unidad aún va de ida) —
+        // no se muestra distancia/tiempo porque todavía no aplica.
+        sequenceEtaText = '';
+      }else if(item.sequenceDistanceKm != null){
         const etaMin = Math.round(item.sequenceEtaMinutes);
         const etaText = etaMin < 1 ? '<1 min' : `~${etaMin} min`;
         sequenceEtaText = `🛣 Distancia por ruta real: ${item.sequenceDistanceKm.toFixed(1)} km · ⏱ ${etaText} (${item.sequenceEtaStops} tramo${item.sequenceEtaStops === 1 ? '' : 's'})${item.sequenceUsedStale ? ' — usando última secuencia conocida' : ''}`;
@@ -752,7 +757,7 @@
             <div class="sub">Vehículo ${escapeHtml(item.vehicle || item.vehid || '—')} · parada ${item.this_stop ?? '—'} de la ruta</div>
             <div class="sub" style="color:${item.directionStale ? 'var(--amber)' : 'var(--text-dim)'};">${directionText}</div>
             ${lastStopText ? `<div class="sub" style="color:var(--amber); font-weight:600;">${lastStopText}</div>` : ''}
-            <div class="sub" style="color:var(--green);">${sequenceEtaText}</div>
+            ${sequenceEtaText ? `<div class="sub" style="color:var(--green);">${sequenceEtaText}</div>` : ''}
             ${parkedText ? `<div class="sub" style="color:var(--amber);">${parkedText}</div>` : ''}
             ${engineOffText ? `<div class="sub" style="color:var(--red);">${engineOffText}</div>` : ''}
           </div>
@@ -1099,16 +1104,27 @@
       try{
         const result = await computeSequenceEta(item);
         if(currentData[i] !== item) return;
+        if(result.notApplicable){
+          item.sequenceDistanceKm = null;
+          item.sequenceEtaMinutes = null;
+          item.sequenceEtaError = null;
+          item.sequenceNotApplicable = true;
+          item.sequenceUsedStale = result.usedStaleSequence;
+          renderRows();
+          return;
+        }
         item.sequenceDistanceKm = result.distanceM / 1000;
         item.sequenceEtaMinutes = result.durationS / 60;
         item.sequenceEtaStops = result.stopsCount;
         item.sequenceEtaError = null;
+        item.sequenceNotApplicable = false;
         item.sequenceUsedStale = result.usedStaleSequence;
         renderRows();
       }catch(err){
         if(currentData[i] !== item) return;
         item.sequenceDistanceKm = null;
         item.sequenceEtaMinutes = null;
+        item.sequenceNotApplicable = false;
         item.sequenceEtaError = err.message;
         renderRows();
       }
