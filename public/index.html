@@ -718,7 +718,9 @@
 
       let sequenceEtaText;
       if(item.sequenceDistanceKm != null){
-        sequenceEtaText = `🛣 Distancia por ruta real: ${item.sequenceDistanceKm.toFixed(1)} km (${item.sequenceEtaStops} tramo${item.sequenceEtaStops === 1 ? '' : 's'})${item.sequenceUsedStale ? ' — usando última secuencia conocida' : ''}`;
+        const etaMin = Math.round(item.sequenceEtaMinutes);
+        const etaText = etaMin < 1 ? '<1 min' : `~${etaMin} min`;
+        sequenceEtaText = `🛣 Distancia por ruta real: ${item.sequenceDistanceKm.toFixed(1)} km · ⏱ ${etaText} (${item.sequenceEtaStops} tramo${item.sequenceEtaStops === 1 ? '' : 's'})${item.sequenceUsedStale ? ' — usando última secuencia conocida' : ''}`;
       }else if(item.sequenceEtaError){
         sequenceEtaText = `🛣 Distancia por ruta real: no disponible (${escapeHtml(item.sequenceEtaError)})`;
       }else{
@@ -1027,7 +1029,11 @@
     const data = await res.json();
     const route = data.routes && data.routes[0];
     if(!route) throw new Error('OSRM no devolvió ninguna ruta');
-    return route.distance; // metros, ya sumados para todo el trayecto
+    // OSRM ya calcula distancia y tiempo juntos, para el mismo trayecto real,
+    // en la misma respuesta — usamos ambos para que el km y el tiempo que se
+    // muestran SIEMPRE concuerden entre sí (antes solo se usaba distance y el
+    // tiempo grande venía de PILOT, de otra fuente, por eso no concordaban).
+    return { distanceM: route.distance, durationS: route.duration };
   }
 
   async function computeSequenceEta(item){
@@ -1076,9 +1082,9 @@
       waypoints.push({ lat: stop.lat, lon: stop.lon });
     }
 
-    const totalMeters = await osrmMultiPoint(waypoints);
+    const { distanceM, durationS } = await osrmMultiPoint(waypoints);
 
-    return { distanceM: totalMeters, stopsCount: sequence.length, usedStaleSequence };
+    return { distanceM, durationS, stopsCount: sequence.length, usedStaleSequence };
   }
 
   async function updateSequenceEtas(){
@@ -1088,6 +1094,7 @@
         const result = await computeSequenceEta(item);
         if(currentData[i] !== item) return;
         item.sequenceDistanceKm = result.distanceM / 1000;
+        item.sequenceEtaMinutes = result.durationS / 60;
         item.sequenceEtaStops = result.stopsCount;
         item.sequenceEtaError = null;
         item.sequenceUsedStale = result.usedStaleSequence;
@@ -1095,6 +1102,7 @@
       }catch(err){
         if(currentData[i] !== item) return;
         item.sequenceDistanceKm = null;
+        item.sequenceEtaMinutes = null;
         item.sequenceEtaError = err.message;
         renderRows();
       }
